@@ -1,0 +1,70 @@
+# Builds the Windows installer from the original developer's latest code
+# (MarshallNickolauson/ScreenCraft) and publishes it as a release on this copy,
+# because the developer has not published a Windows download yet.
+# Runs when started by hand, and every Monday; skips if that code was already built.
+name: Build Windows installer
+
+on:
+  workflow_dispatch:
+    inputs:
+      force:
+        description: Build even if this code was already built
+        type: boolean
+        default: false
+  schedule:
+    - cron: "0 6 * * 1"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 120
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Get the developer's latest code
+        uses: actions/checkout@v4
+        with:
+          repository: MarshallNickolauson/ScreenCraft
+          ref: main
+
+      - name: Skip if this code was already built
+        id: check
+        shell: pwsh
+        run: |
+          $sha = (git rev-parse --short=7 HEAD).Trim()
+          $version = (Select-String -Path Cargo.toml -Pattern '^version = "(.+)"' | Select-Object -First 1).Matches.Groups[1].Value
+          $tag = "v$version-$sha"
+          "tag=$tag" >> $env:GITHUB_OUTPUT
+          "version=$version" >> $env:GITHUB_OUTPUT
+          gh release view $tag --repo $env:GITHUB_REPOSITORY *> $null
+          $exists = ($LASTEXITCODE -eq 0)
+          $skip = $exists -and ('${{ inputs.force }}' -ne 'true')
+          "skip=$($skip.ToString().ToLower())" >> $env:GITHUB_OUTPUT
+          Write-Host "Upstream code $sha, version $version, already built: $exists"
+
+      - name: Install NSIS (installer maker)
+        if: steps.check.outputs.skip != 'true'
+        shell: pwsh
+        run: choco install nsis -y --no-progress
+
+      - name: Build ScreenCraft and its installer
+        if: steps.check.outputs.skip != 'true'
+        shell: pwsh
+        run: |
+          $env:LIBCLANG_PATH = "C:\Program Files\LLVM\bin"
+          powershell -ExecutionPolicy Bypass -File scripts\build-windows.ps1
+
+      - name: Publish the installer as a release
+        if: steps.check.outputs.skip != 'true'
+        shell: pwsh
+        run: |
+          $tag = "${{ steps.check.outputs.tag }}"
+          $exe = Get-ChildItem screencraft_*.exe | Select-Object -First 1
+          $hash = (Get-FileHash $exe.FullName -Algorithm SHA256).Hash.ToLower()
+          "$hash  $($exe.Name)" | Set-Content SHA256SUMS.txt -Encoding ascii
+          $notes = "Unofficial Windows build of ScreenCraft ${{ steps.check.outputs.version }}, made by GitHub Actions from MarshallNickolauson/ScreenCraft at commit $(git rev-parse HEAD). Unsigned."
+          gh release delete $tag --repo $env:GITHUB_REPOSITORY --yes --cleanup-tag 2>$null
+          gh release create $tag $exe.FullName SHA256SUMS.txt --repo $env:GITHUB_REPOSITORY --title "ScreenCraft $tag (Windows build)" --notes $notes
