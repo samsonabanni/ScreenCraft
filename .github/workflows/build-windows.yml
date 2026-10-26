@@ -44,6 +44,7 @@ jobs:
           $skip = $exists -and ('${{ inputs.force }}' -ne 'true')
           "skip=$($skip.ToString().ToLower())" >> $env:GITHUB_OUTPUT
           Write-Host "Upstream code $sha, version $version, already built: $exists"
+          exit 0   # "release not found" above is the normal case, not a failure
 
       - name: Install NSIS (installer maker)
         if: steps.check.outputs.skip != 'true'
